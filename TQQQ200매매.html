@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>티큐200 200일선 매매법</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --bg: #000000;
+      --text-primary: #ffffff;
+      --text-secondary: #aaaaaa;
+      --maintain: #b96bc6;
+      --buy: #fd8a69;
+      --sell: #58ccff;
+      --price-line: #58ccff;
+      --ma200-line: #afd485;
+      --envelope-line: #b96bc6;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Noto Sans KR", system-ui, sans-serif;
+    }
+    body {
+      background-color: var(--bg);
+      color: var(--text-primary);
+    }
+    .widget {
+      background-color: var(--bg);
+      color: var(--text-primary);
+      padding: 12px;
+      width: 100%;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    .title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .sub-header {
+      display: flex;
+      align-items: center;
+      font-size: 9px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+    .sub-header .spacer {
+      flex: 1;
+    }
+    .date-text {
+      font-size: 10px;
+      color: var(--text-primary);
+    }
+    .content {
+      display: flex;
+      flex-direction: row;
+      gap: 12px;
+    }
+    .chart-container {
+      flex: 1.2;
+    }
+    .info {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    canvas {
+      width: 100%;
+      height: auto;
+      border-radius: 4px;
+    }
+    .principle-line {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      display: flex;
+      flex-wrap: wrap;
+    }
+    .principle-word {
+      margin-right: 4px;
+    }
+    .principle-word.maintain { color: var(--maintain); }
+    .principle-word.buy { color: var(--buy); }
+    .principle-word.sell { color: var(--sell); }
+
+    .situation-text {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+    .stats-line {
+      margin-top: 4px;
+      display: flex;
+      align-items: center;
+      font-size: 10px;
+    }
+    .stats-line span {
+      white-space: nowrap;
+    }
+    .stats-sep {
+      margin: 0 6px;
+    }
+    .price {
+      color: var(--price-line);
+    }
+    .env {
+      color: var(--envelope-line);
+    }
+    .ma200 {
+      color: var(--ma200-line);
+    }
+
+    .footer {
+      margin-top: 8px;
+      font-size: 9px;
+      color: var(--text-secondary);
+      text-align: right;
+    }
+
+    @media (max-width: 480px) {
+      .content {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<div class="widget">
+  <div class="title">티큐200 200일선 매매법</div>
+  <div class="sub-header">
+    <div>위젯 업데이트: v1.37 (25.11.04. 업데이트)</div>
+    <div class="spacer"></div>
+    <div class="date-text" id="dateText">로딩 중...</div>
+  </div>
+
+  <div class="content">
+    <div class="chart-container">
+      <canvas id="chartCanvas" width="500" height="300"></canvas>
+    </div>
+    <div class="info">
+      <div id="principleContainer"></div>
+      <div class="situation-text" id="situationText"></div>
+      <div class="stats-line" id="statsLine"></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    데이터: Yahoo Finance (TQQQ) / 미국 동부시간 종가 기준
+  </div>
+</div>
+
+<script>
+  const SCRIPT_VERSION = "1.37.0";
+  const TICKER = "TQQQ";
+  const DATA_RANGE_DAYS = 300;
+  const CHART_DISPLAY_DAYS = 90;
+  const ENVELOPE_PERCENTAGE = 5;
+
+  async function fetchStockData() {
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/chart/${TICKER}?range=${DATA_RANGE_DAYS}d&interval=1d`;
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Yahoo Finance 응답 오류: " + res.status);
+    const json = await res.json();
+
+    const result = json.chart.result[0];
+    const timestamps = result.timestamp;
+    const closesRaw = result.indicators.quote[0].close;
+    const closes = closesRaw.map(p => (p == null ? 0 : p));
+
+    const currentPrice = result.meta.regularMarketPrice;
+    if (closes.length > 0 && currentPrice != null) {
+      closes[closes.length - 1] = currentPrice;
+    }
+
+    let lastValidTimestamp = null;
+    for (let i = timestamps.length - 1; i >= 0; i--) {
+      if (closes[i] != null && closes[i] > 0) {
+        lastValidTimestamp = timestamps[i];
+        break;
+      }
+    }
+
+    return { closes, timestamps, marketTime: lastValidTimestamp, currentPrice };
+  }
+
+  function calculateMovingAverage(data, period) {
+    const ma = new Array(data.length).fill(NaN);
+    if (data.length < period) return ma;
+
+    let sum = 0;
+    for (let i = 0; i < period; i++) sum += data[i];
+    ma[period - 1] = sum / period;
+
+    for (let i = period; i < data.length; i++) {
+      sum = sum - data[i - period] + data[i];
+      ma[i] = sum / period;
+    }
+    return ma;
+  }
+
+  function determineSituation(closes, ma200Series) {
+    const currentPrice = closes[closes.length - 1];
+    const yesterdayPrice = closes[closes.length - 2];
+
+    const nonNa = ma200Series.filter(v => !isNaN(v));
+    const currentMA200 = nonNa[nonNa.length - 1];
+    const yesterdayMA200 = nonNa[nonNa.length - 2];
+
+    const envelope = currentMA200 * (1 + ENVELOPE_PERCENTAGE / 100);
+
+    if (currentPrice > currentMA200 && yesterdayPrice <= yesterdayMA200) {
+      return { name: "상승 신호!", principle: "내일 종가 확인\n이후 진입" };
+    }
+    if (currentPrice > envelope) {
+      return { name: "과열 상황", principle: "TQQQ 유지\nSPYM 추가매수" };
+    }
+    if (currentPrice > currentMA200) {
+      return { name: "집중 투자 상황", principle: "SGOV 매도\nTQQQ 매수" };
+    }
+    return { name: "하락 상황", principle: "SPYM TQQQ 매도\nSGOV 매수" };
+  }
+
+  function formatNYDate(tsSec) {
+    if (!tsSec) return "날짜 정보 없음";
+    const date = new Date(tsSec * 1000);
+
+    const options = {
+      timeZone: "America/New_York",
+      year: "2-digit",
+      month: "2-digit",
+      day: "2-digit"
+    };
+    const formatter = new Intl.DateTimeFormat("ko-KR", options);
+    const parts = formatter.formatToParts(date);
+    const y = parts.find(p => p.type === "year").value;
+    const m = parts.find(p => p.type === "month").value;
+    const d = parts.find(p => p.type === "day").value;
+    return `${y}.${m}.${d}. 종가 기준`;
+  }
+
+  function drawChart(closes, ma200Series, envelopeSeries) {
+    const canvas = document.getElementById("chartCanvas");
+    const ctx = canvas.getContext("2d");
+    const width = canvas.width;
+    const height = canvas.height;
+    const padding = 15;
+
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, width, height);
+
+    const n = closes.length;
+    const start = Math.max(0, n - CHART_DISPLAY_DAYS);
+    const closesSlice = closes.slice(start);
+    const maSlice = ma200Series.slice(start);
+    const envSlice = envelopeSeries.slice(start);
+
+    const allValues = [];
+    closesSlice.forEach(v => { if (!isNaN(v) && v > 0) allValues.push(v); });
+    maSlice.forEach(v => { if (!isNaN(v) && v > 0) allValues.push(v); });
+    envSlice.forEach(v => { if (!isNaN(v) && v > 0) allValues.push(v); });
+
+    if (allValues.length === 0) return;
+
+    const minY = Math.min(...allValues);
+    const maxY = Math.max(...allValues);
+
+    function transform(val, i, total) {
+      const x = padding + (i / (total - 1)) * (width - padding * 2);
+      const y =
+        height -
+        padding -
+        ((val - minY) / (maxY - minY)) * (height - padding * 2);
+      return { x, y };
+    }
+
+    function plotLine(values, color) {
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        if (isNaN(v) || v <= 0) continue;
+        const p = transform(v, i, values.length);
+        if (!started) {
+          ctx.moveTo(p.x, p.y);
+          started = true;
+        } else {
+          ctx.lineTo(p.x, p.y);
+        }
+      }
+      if (started) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
+    }
+
+    plotLine(envSlice, "#b96bc6");
+    plotLine(maSlice, "#afd485");
+    plotLine(closesSlice, "#58ccff");
+  }
+
+  function renderPrinciple(principle) {
+    const container = document.getElementById("principleContainer");
+    container.innerHTML = "";
+
+    const lines = principle.split("\n");
+    lines.forEach(line => {
+      const lineDiv = document.createElement("div");
+      lineDiv.className = "principle-line";
+
+      const words = line.split(" ");
+      words.forEach(word => {
+        const span = document.createElement("span");
+        span.className = "principle-word";
+        span.textContent = word;
+
+        if (word.includes("유지")) span.classList.add("maintain");
+        else if (word.includes("매수") && !word.includes("매도"))
+          span.classList.add("buy");
+        else if (word.includes("매도")) span.classList.add("sell");
+
+        lineDiv.appendChild(span);
+      });
+
+      container.appendChild(lineDiv);
+    });
+  }
+
+  function renderStats(currentPrice, ma200, envelope, situationName) {
+    const deviation = ((currentPrice / ma200) - 1) * 100;
+    const deviationText =
+      ` (${deviation >= 0 ? "+" : ""}${deviation.toFixed(2)}%)`;
+    const situationTextEl = document.getElementById("situationText");
+    situationTextEl.textContent = situationName + deviationText;
+
+    const statsLine = document.getElementById("statsLine");
+    statsLine.innerHTML = "";
+
+    function addSpan(text, className) {
+      const span = document.createElement("span");
+      span.textContent = text;
+      if (className) span.className = className;
+      statsLine.appendChild(span);
+    }
+
+    addSpan(`$${currentPrice.toFixed(2)}`, "price");
+    addSpan("/", "stats-sep");
+    addSpan(`$${envelope.toFixed(2)}`, "env");
+    addSpan("/", "stats-sep");
+    addSpan(`$${ma200.toFixed(2)}`, "ma200");
+  }
+
+  async function init() {
+    try {
+      const { closes, marketTime, currentPrice } = await fetchStockData();
+      if (!closes || closes.length < 200) {
+        document.getElementById("dateText").textContent =
+          "데이터 로딩 실패 (200일 미만)";
+        return;
+      }
+
+      const ma200Series = calculateMovingAverage(closes, 200);
+      const nonNa = ma200Series.filter(v => !isNaN(v));
+      const lastMA200 = nonNa[nonNa.length - 1];
+
+      const envelopeSeries = ma200Series.map(v =>
+        isNaN(v) ? NaN : v * (1 + ENVELOPE_PERCENTAGE / 100)
+      );
+      const lastEnvelope =
+        isNaN(lastMA200) ? 0 : lastMA200 * (1 + ENVELOPE_PERCENTAGE / 100);
+
+      const situation = determineSituation(closes, ma200Series);
+
+      document.getElementById("dateText").textContent = formatNYDate(marketTime);
+
+      drawChart(closes, ma200Series, envelopeSeries);
+
+      renderPrinciple(situation.principle);
+      renderStats(currentPrice, lastMA200, lastEnvelope, situation.name);
+    } catch (e) {
+      console.error(e);
+      document.getElementById("dateText").textContent = "데이터 로딩 오류";
+      document.getElementById("situationText").textContent =
+        "네트워크 상태 또는 Yahoo Finance API를 확인해주세요.";
+    }
+  }
+
+  init();
+</script>
+</body>
+</html>
